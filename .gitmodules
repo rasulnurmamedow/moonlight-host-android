@@ -1,0 +1,10 @@
+[submodule "moonlighthost/src/main/cpp/enet"]
+	path = moonlighthost/src/main/cpp/enet
+	url = https://github.com/cgutman/enet.git
+	branch = moonlight
+[submodule "moonlighthost/src/main/cpp/opus"]
+	path = moonlighthost/src/main/cpp/opus
+	url = https://github.com/xiph/opus.git
+[submodule "moonlighthost/src/main/cpp/nanors"]
+	path = moonlighthost/src/main/cpp/nanors
+	url = https://github.com/sleepybishop/nanors.git
