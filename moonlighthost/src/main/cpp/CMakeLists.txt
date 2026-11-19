@@ -20,3 +20,8 @@ add_library(moonlighthost SHARED
         nanors/deps/obl/oblas_lite.c)
 target_include_directories(moonlighthost PRIVATE enet/include opus/include nanors nanors/deps nanors/deps/obl)
 target_link_libraries(moonlighthost enet opus log)
+
+# Export only the JNIEXPORT entry points. Host apps often ship their own ENet or libopus
+# (for netplay, audio...), and exported copies here could be interposed with theirs.
+set_target_properties(moonlighthost PROPERTIES C_VISIBILITY_PRESET hidden)
+target_link_options(moonlighthost PRIVATE "-Wl,--exclude-libs,ALL")
