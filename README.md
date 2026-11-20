@@ -49,7 +49,7 @@ host.stop();                  // UI thread
 
 ### Rendering into the encoder yourself
 
-If your renderer can draw into a second `Surface` (a second Vulkan swapchain, an EGL window surface), skip `attachView` and pass a `SurfaceListener`. You get the encoder's input surface only while a client is watching, so nothing is rendered for an empty stream:
+If your renderer can draw into a second `Surface` (a second Vulkan swapchain, an EGL window surface), skip `attachView` and pass a `SurfaceListener`. The encoder only runs while a client is watching, made with that client's resolution and codec, and you get its input surface for that time, so nothing is encoded or rendered for an empty stream:
 
 ```java
 new MoonlightHost.Builder(activity)

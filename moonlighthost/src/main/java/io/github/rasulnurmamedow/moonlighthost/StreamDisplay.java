@@ -69,18 +69,23 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
 
     public Config getConfig() { return config; }
 
-    /** Creates the encoder, and in view mode the virtual display and presentation. UI thread. */
+    /**
+     * In view mode, creates the encoder, virtual display and presentation. In surface mode the
+     * encoder only exists while a client watches, made with the client's settings. UI thread.
+     */
     public void start() throws IOException {
         bitrateKbps = config.bitrateMbps * 1000;
-        createEncoder();
-        running = true;
         if (surfaceListener == null) {
+            createEncoder();
             buildDisplay();
         }
+        running = true;
         drainThread = new Thread(this::drainLoop, "MoonlightHost-drain");
         drainThread.start();
-        Log.i(TAG, "stream started " + config.width + "x" + config.height + "@" + config.fps
-                + " " + (config.hevc ? "HEVC" : "H.264") + " " + config.bitrateMbps + "Mbps");
+        if (surfaceListener == null) {
+            Log.i(TAG, "stream started " + config.width + "x" + config.height + "@" + config.fps
+                    + " " + (config.hevc ? "HEVC" : "H.264") + " " + config.bitrateMbps + "Mbps");
+        }
     }
 
     /** Builds and starts a new encoder from the current config (sets encoder and inputSurface). */
@@ -147,6 +152,15 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     public void configure(int width, int height, int fps, int kbps, boolean hevc) {
         int w = Math.max(640, Math.min(3840, width)) & ~1;
         int h = Math.max(360, Math.min(2160, height)) & ~1;
+        synchronized (encoderLock) {
+            if (encoder == null) {
+                // Surface mode with nobody watching: the encoder is made with these when a client does.
+                config.width = w; config.height = h; config.hevc = hevc;
+                config.fps = Math.max(10, Math.min(120, fps));
+                bitrateKbps = kbps;
+                return;
+            }
+        }
         if (w != config.width || h != config.height || hevc != config.hevc) {
             // New size or codec: new encoder + new virtual display + new presentation.
             runOnUiThreadAndWait(() -> rebuild(w, h, fps, kbps, hevc));
@@ -227,10 +241,38 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     public void setFrameListener(MoonlightSession.FrameListener listener) {
         frameListener = listener;
         if (surfaceListener != null) {
-            // Only render while someone watches.
-            runOnUiThreadAndWait(() -> updateAttachedSurface(listener != null));
+            runOnUiThreadAndWait(() -> setWatched(listener != null));
         }
         if (listener != null) requestKeyFrame();
+    }
+
+    /** Surface mode, UI thread: the encoder and its surface exist only while a client watches. */
+    private void setWatched(boolean watched) {
+        synchronized (encoderLock) {
+            if (watched && encoder == null && running) {
+                try {
+                    createEncoder();
+                } catch (IOException | RuntimeException e) {
+                    Log.e(TAG, "cannot start the encoder", e);
+                    return;
+                }
+                Log.i(TAG, "encoder started " + config.width + "x" + config.height + "@" + config.fps
+                        + " " + (config.hevc ? "HEVC" : "H.264") + " " + bitrateKbps + "kbps");
+            }
+            updateAttachedSurface(watched);
+            if (!watched && encoder != null) {
+                // The app has let go of the surface, so the encoder can go.
+                MediaCodec old = encoder;
+                Surface oldSurface = inputSurface;
+                encoder = null;
+                inputSurface = null;
+                codecConfig = null;
+                try { old.stop(); } catch (RuntimeException ignored) {}
+                old.release();
+                oldSurface.release();
+                Log.i(TAG, "encoder stopped");
+            }
+        }
     }
 
     /** Surface mode, UI thread: hands the current encoder surface to the app, or takes it back. */
@@ -320,6 +362,11 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
         byte[] chunk = new byte[0];
         while (running) {
             MediaCodec enc = encoder;
+            if (enc == null) {
+                // Surface mode, nobody watching.
+                try { Thread.sleep(5); } catch (InterruptedException e) { break; }
+                continue;
+            }
             int index;
             try {
                 index = enc.dequeueOutputBuffer(info, 20_000);
