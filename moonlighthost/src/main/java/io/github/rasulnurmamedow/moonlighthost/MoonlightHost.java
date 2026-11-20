@@ -29,7 +29,8 @@ import java.util.Map;
  * </pre>
  *
  * The game view is moved to a private virtual display that feeds the hardware encoder, so
- * the app's own window (touch controls, menus) stays on the phone.
+ * the app's own window (touch controls, menus) stays on the phone. An app that can render into
+ * a second surface itself passes a {@link SurfaceListener} instead of calling attachView.
  */
 public final class MoonlightHost {
     private static final String TAG = "MoonlightHost";
@@ -46,6 +47,7 @@ public final class MoonlightHost {
     private final PinProvider pinProvider;
     private final InputListener inputListener;
     private final StreamListener streamListener;
+    private final SurfaceListener surfaceListener;
     private final StreamDisplay.Config videoConfig;
 
     private StreamDisplay display;
@@ -62,6 +64,7 @@ public final class MoonlightHost {
         pinProvider = b.pinProvider != null ? b.pinProvider : new PinDialog(b.activity);
         inputListener = b.inputListener;
         streamListener = b.streamListener;
+        surfaceListener = b.surfaceListener;
         videoConfig = new StreamDisplay.Config();
         videoConfig.width = b.width;
         videoConfig.height = b.height;
@@ -72,7 +75,7 @@ public final class MoonlightHost {
 
     /** Starts the encoder, virtual display, HTTP(S) server and mDNS announcement. UI thread. */
     public void start() throws Exception {
-        display = new StreamDisplay(activity, videoConfig);
+        display = new StreamDisplay(activity, videoConfig, surfaceListener);
         display.start();
         HostIdentity identity = HostIdentity.loadOrCreate(activity);
         server = new NvHttpServer(identity, pinProvider, hostName, appTitle);
@@ -84,6 +87,9 @@ public final class MoonlightHost {
 
     /** Shows the game view on the stream instead of the phone. UI thread, after {@link #start()}. */
     public void attachView(View gameView) {
+        if (surfaceListener != null) {
+            throw new IllegalStateException("attachView can't be used with a SurfaceListener");
+        }
         display.attachRendererView(gameView);
     }
 
@@ -234,6 +240,7 @@ public final class MoonlightHost {
         private PinProvider pinProvider;
         private InputListener inputListener;
         private StreamListener streamListener;
+        private SurfaceListener surfaceListener;
         private int width = 1920, height = 1080, fps = 60, bitrateMbps = 30;
         private boolean hevc = true;
 
@@ -247,6 +254,8 @@ public final class MoonlightHost {
         public Builder setPinProvider(PinProvider provider) { pinProvider = provider; return this; }
         public Builder setInputListener(InputListener listener) { inputListener = listener; return this; }
         public Builder setStreamListener(StreamListener listener) { streamListener = listener; return this; }
+        /** Render into the encoder surface yourself instead of calling {@link MoonlightHost#attachView}. */
+        public Builder setSurfaceListener(SurfaceListener listener) { surfaceListener = listener; return this; }
         /** Initial video settings; each client's own choice replaces them when it connects. */
         public Builder setInitialVideo(int width, int height, int fps, int bitrateMbps, boolean hevc) {
             this.width = width & ~1; this.height = height & ~1; this.fps = fps;

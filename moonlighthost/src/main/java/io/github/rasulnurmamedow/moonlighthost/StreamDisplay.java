@@ -25,9 +25,10 @@ import java.nio.ByteBuffer;
 import java.util.Collections;
 
 /**
- * The app's game view is shown on a private virtual display whose surface is the input of a
- * hardware video encoder; the app's own window (e.g. touch controls) stays on the phone.
- * Encoded frames are handed to the Moonlight session.
+ * Feeds a hardware video encoder and hands its frames to the Moonlight session. The picture
+ * comes either from the app's game view, shown on a private virtual display whose surface is
+ * the encoder input (the app's own window stays on the phone), or, with a
+ * {@link SurfaceListener}, from the app rendering into the encoder input surface itself.
  */
 final class StreamDisplay implements MoonlightSession.VideoSource {
     private static final String TAG = "MoonlightHost";
@@ -43,6 +44,9 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
 
     private final Context context;
     private final Config config;
+    // Null in view mode. Otherwise the app renders into the encoder surface while a client watches.
+    private final SurfaceListener surfaceListener;
+    private Surface attachedSurface;  // UI thread
     private MediaCodec encoder;
     private Surface inputSurface;
     private VirtualDisplay virtualDisplay;
@@ -57,19 +61,22 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     private volatile int bitrateKbps;
     private volatile MoonlightSession.FrameListener frameListener;
 
-    StreamDisplay(Context context, Config config) {
+    StreamDisplay(Context context, Config config, SurfaceListener surfaceListener) {
         this.context = context;
         this.config = config;
+        this.surfaceListener = surfaceListener;
     }
 
     public Config getConfig() { return config; }
 
-    /** Creates encoder, virtual display and presentation. Must run on the UI thread. */
+    /** Creates the encoder, and in view mode the virtual display and presentation. UI thread. */
     public void start() throws IOException {
         bitrateKbps = config.bitrateMbps * 1000;
         createEncoder();
         running = true;
-        buildDisplay();
+        if (surfaceListener == null) {
+            buildDisplay();
+        }
         drainThread = new Thread(this::drainLoop, "MoonlightHost-drain");
         drainThread.start();
         Log.i(TAG, "stream started " + config.width + "x" + config.height + "@" + config.fps
@@ -79,6 +86,21 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     /** Builds and starts a new encoder from the current config (sets encoder and inputSurface). */
     private void createEncoder() throws IOException {
         String mime = config.hevc ? MediaFormat.MIMETYPE_VIDEO_HEVC : MediaFormat.MIMETYPE_VIDEO_AVC;
+        encoder = MediaCodec.createEncoderByType(mime);
+        try {
+            encoder.configure(encoderFormat(mime, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        } catch (RuntimeException e) {
+            // Some encoders reject optional keys; retry with the bare minimum.
+            Log.w(TAG, "encoder rejected low-latency keys, retrying plain config", e);
+            encoder.release();
+            encoder = MediaCodec.createEncoderByType(mime);
+            encoder.configure(encoderFormat(mime, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        }
+        inputSurface = encoder.createInputSurface();
+        encoder.start();
+    }
+
+    private MediaFormat encoderFormat(String mime, boolean lowLatencyKeys) {
         MediaFormat format = MediaFormat.createVideoFormat(mime, config.width, config.height);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
@@ -87,24 +109,12 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
         // No periodic key frames (big bursts on Wi-Fi): clients request one when they need it.
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 3600);
         format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / 10);
-        format.setInteger(MediaFormat.KEY_PRIORITY, 0); // realtime
         if (Build.VERSION.SDK_INT >= 29) format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
-        if (Build.VERSION.SDK_INT >= 30) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-
-        encoder = MediaCodec.createEncoderByType(mime);
-        try {
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        } catch (RuntimeException e) {
-            // Some encoders reject optional keys; retry with the bare minimum.
-            Log.w(TAG, "encoder rejected low-latency keys, retrying plain config", e);
-            format.removeKey(MediaFormat.KEY_PRIORITY);
-            if (Build.VERSION.SDK_INT >= 30) format.removeKey(MediaFormat.KEY_LOW_LATENCY);
-            encoder.release();
-            encoder = MediaCodec.createEncoderByType(mime);
-            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        if (lowLatencyKeys) {
+            if (Build.VERSION.SDK_INT >= 23) format.setInteger(MediaFormat.KEY_PRIORITY, 0); // realtime
+            if (Build.VERSION.SDK_INT >= 30) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
         }
-        inputSurface = encoder.createInputSurface();
-        encoder.start();
+        return format;
     }
 
     /** Virtual display (fed into the current encoder surface) + presentation. UI thread. */
@@ -174,15 +184,22 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
                 return;
             }
             codecConfig = null;
-            if (rendererView != null && oldRoot != null) oldRoot.removeView(rendererView);
-            try { oldPres.dismiss(); } catch (RuntimeException ignored) {}
-            buildDisplay();
-            if (rendererView != null) {
-                presentationRoot.addView(rendererView, 0, new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                heartbeat.bringToFront();
+            if (surfaceListener != null) {
+                // The app lets go of the old surface before its encoder is released.
+                boolean attached = attachedSurface != null;
+                updateAttachedSurface(false);
+                if (attached) updateAttachedSurface(true);
+            } else {
+                if (rendererView != null && oldRoot != null) oldRoot.removeView(rendererView);
+                try { oldPres.dismiss(); } catch (RuntimeException ignored) {}
+                buildDisplay();
+                if (rendererView != null) {
+                    presentationRoot.addView(rendererView, 0, new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    heartbeat.bringToFront();
+                }
+                oldVd.release();
             }
-            oldVd.release();
             try { oldEnc.stop(); } catch (RuntimeException ignored) {}
             oldEnc.release();
             oldSurface.release();
@@ -206,7 +223,26 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     @Override
     public void setFrameListener(MoonlightSession.FrameListener listener) {
         frameListener = listener;
+        if (surfaceListener != null) {
+            // Only render while someone watches.
+            runOnUiThreadAndWait(() -> updateAttachedSurface(listener != null));
+        }
         if (listener != null) requestKeyFrame();
+    }
+
+    /** Surface mode, UI thread: hands the current encoder surface to the app, or takes it back. */
+    private void updateAttachedSurface(boolean attach) {
+        Surface target = attach && running ? inputSurface : null;
+        if (attachedSurface == target) return;
+        if (attachedSurface != null) {
+            Surface old = attachedSurface;
+            attachedSurface = null;
+            surfaceListener.onSurfaceDestroyed(old);
+        }
+        if (target != null) {
+            attachedSurface = target;
+            surfaceListener.onSurfaceCreated(target, config.width, config.height);
+        }
     }
 
 
@@ -320,6 +356,9 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     public void stop() {
         if (!running && encoder == null) return;
         running = false;
+        if (surfaceListener != null) {
+            runOnUiThreadAndWait(() -> updateAttachedSurface(false));
+        }
         if (presentation != null) {
             try { presentation.dismiss(); } catch (RuntimeException ignored) {}
             presentation = null;

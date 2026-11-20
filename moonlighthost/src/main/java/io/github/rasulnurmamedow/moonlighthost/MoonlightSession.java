@@ -18,6 +18,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import javax.crypto.Cipher;
@@ -185,10 +186,11 @@ final class MoonlightSession {
         String line;
         while ((line = readLine(in)) != null && !line.isEmpty()) {
             int c = line.indexOf(':');
-            if (c > 0) headers.put(line.substring(0, c).trim().toLowerCase(), line.substring(c + 1).trim());
+            if (c > 0) headers.put(line.substring(0, c).trim().toLowerCase(Locale.ROOT), line.substring(c + 1).trim());
         }
         int contentLength = 0;
-        try { contentLength = Integer.parseInt(headers.getOrDefault("content-length", "0")); } catch (NumberFormatException ignored) {}
+        String lengthHeader = headers.get("content-length");
+        try { contentLength = lengthHeader != null ? Integer.parseInt(lengthHeader) : 0; } catch (NumberFormatException ignored) {}
         byte[] body = new byte[contentLength];
         int off = 0;
         while (off < contentLength) {
@@ -199,7 +201,7 @@ final class MoonlightSession {
         String[] parts = requestLine.split(" ");
         String method = parts[0];
         String target = parts.length > 1 ? parts[1] : "";
-        String cseq = headers.getOrDefault("cseq", "0");
+        String cseq = headers.containsKey("cseq") ? headers.get("cseq") : "0";
         Log.d(TAG, "RTSP " + method + " " + target);
 
         StringBuilder extra = new StringBuilder();

@@ -26,6 +26,7 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Persistent GameStream host identity: RSA-2048 key, self-signed certificate, unique id and
@@ -89,7 +90,7 @@ final class HostIdentity {
         byte[] pem = toPem(cert.getEncoded());
         byte[] idBytes = new byte[8];
         new SecureRandom().nextBytes(idBytes);
-        String id = Hex.encode(idBytes).toUpperCase();
+        String id = Hex.encode(idBytes).toUpperCase(Locale.ROOT);
 
         writeFile(keyFile, kp.getPrivate().getEncoded());
         writeFile(certFile, pem);

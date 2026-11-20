@@ -47,6 +47,27 @@ host.isStreaming(); host.getClientAddress(); host.getFps(); host.getBitrateMbps(
 host.stop();                  // UI thread
 ```
 
+### Rendering into the encoder yourself
+
+If your renderer can draw into a second `Surface` (a second Vulkan swapchain, an EGL window surface), skip `attachView` and pass a `SurfaceListener`. You get the encoder's input surface only while a client is watching, so nothing is rendered for an empty stream:
+
+```java
+new MoonlightHost.Builder(activity)
+        .setSurfaceListener(new SurfaceListener() {
+            @Override public void onSurfaceCreated(Surface surface, int width, int height) {
+                // start rendering the game into surface, width x height
+            }
+            @Override public void onSurfaceDestroyed(Surface surface) {
+                // stop rendering into it before returning; it's released right after
+            }
+        })
+        ...
+```
+
+Both calls come on the UI thread. A client that asks for another resolution or codec gets a new surface: `onSurfaceDestroyed` for the old one, then `onSurfaceCreated`.
+
+### Pairing
+
 The first time a client connects, Moonlight shows a PIN. By default `PinDialog` asks for it on the phone. You can pass your own `PinProvider`.
 
 ### Input
@@ -85,7 +106,7 @@ dependencies { implementation project(':moonlighthost') }
 ```
 
 Requirements:
-- Android 9+ (API 28); low-latency encoder mode is used on Android 11+
+- Android 5.0+ (API 21); low-latency encoder mode is used on Android 11+
 - NDK 29 and CMake 3.22.1
 - ABIs: arm64-v8a, armeabi-v7a, x86_64
 
