@@ -86,18 +86,21 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
     /** Builds and starts a new encoder from the current config (sets encoder and inputSurface). */
     private void createEncoder() throws IOException {
         String mime = config.hevc ? MediaFormat.MIMETYPE_VIDEO_HEVC : MediaFormat.MIMETYPE_VIDEO_AVC;
-        encoder = MediaCodec.createEncoderByType(mime);
+        MediaCodec codec = MediaCodec.createEncoderByType(mime);
         try {
-            encoder.configure(encoderFormat(mime, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            codec.configure(encoderFormat(mime, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         } catch (RuntimeException e) {
             // Some encoders reject optional keys; retry with the bare minimum.
             Log.w(TAG, "encoder rejected low-latency keys, retrying plain config", e);
-            encoder.release();
-            encoder = MediaCodec.createEncoderByType(mime);
-            encoder.configure(encoderFormat(mime, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            codec.release();
+            codec = MediaCodec.createEncoderByType(mime);
+            codec.configure(encoderFormat(mime, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         }
-        inputSurface = encoder.createInputSurface();
-        encoder.start();
+        Surface surface = codec.createInputSurface();
+        codec.start();
+        // Published only once started: the drain thread picks up whatever encoder is set.
+        inputSurface = surface;
+        encoder = codec;
     }
 
     private MediaFormat encoderFormat(String mime, boolean lowLatencyKeys) {
@@ -321,9 +324,11 @@ final class StreamDisplay implements MoonlightSession.VideoSource {
             try {
                 index = enc.dequeueOutputBuffer(info, 20_000);
             } catch (IllegalStateException e) {
-                if (running && enc != encoder) continue; // encoder was swapped by rebuild()
-                Log.e(TAG, "drain loop stopped", e);
-                break;
+                // rebuild() stopped this encoder under us, and the next one is coming. Never give up
+                // while running: without draining, the encoder stops taking frames.
+                if (!running) break;
+                try { Thread.sleep(5); } catch (InterruptedException ie) { break; }
+                continue;
             }
             if (index < 0) continue;
             try {
